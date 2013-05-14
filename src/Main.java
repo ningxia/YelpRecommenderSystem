@@ -2,25 +2,35 @@ import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.net.UnknownHostException;
-import java.util.ArrayList;
-import java.util.Set;
+
+import org.apache.lucene.analysis.standard.StandardAnalyzer;
+import org.apache.lucene.document.Document;
+import org.apache.lucene.index.IndexReader;
+import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.IndexableField;
+import org.apache.lucene.index.Term;
+import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.Query;
+import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.TermQuery;
+import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.TopScoreDocCollector;
+import org.apache.lucene.store.Directory;
+import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.util.Version;
+
+import util.StanfordLemmatizer;
+import util.TextIndexer;
+import util.Tokenizer;
 
 import model.Review;
 import model.Votes;
-
-import com.aliasi.tokenizer.EnglishStopTokenizerFactory;
-import com.aliasi.tokenizer.IndoEuropeanTokenizerFactory;
-import com.aliasi.tokenizer.LowerCaseTokenizerFactory;
-import com.aliasi.tokenizer.PorterStemmerTokenizerFactory;
-import com.aliasi.tokenizer.StopTokenizerFactory;
-import com.aliasi.tokenizer.Tokenization;
-import com.aliasi.tokenizer.TokenizerFactory;
-import com.aliasi.util.CollectionUtils;
 
 import com.google.code.morphia.Morphia;
 import com.mongodb.DB;
@@ -29,15 +39,13 @@ import com.mongodb.DBCursor;
 import com.mongodb.DBObject;
 import com.mongodb.Mongo;
 
+//import util.StanfordLemmatizer;
+
 public class Main {
-	
-	private static File file = new File("");
-	private static String absolutePath = file.getAbsolutePath();
-	private static final Set<String> stopSet = CollectionUtils.asSet("!", ",", ".", ":");
 	
 	public static void ReviewText(DB db) throws IOException {
 		
-		File f = new File(absolutePath + "/data/" + "review.txt");
+		File f = new File("./data/" + "review.txt");
 		BufferedWriter bw = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(f)));
 		Morphia morphia = new Morphia();
 		morphia.map(Review.class).map(Votes.class);
@@ -50,48 +58,55 @@ public class Main {
 //			System.out.println(obj.get("user_id") + "\t" + obj.get("business_id") + "\t" + obj.get("text"));
 			line = /**obj.get("review_id") + "|" + obj.get("user_id") + "|" + obj.get("business_id") + "|" +*/ obj.get("text").toString();
 			line = line.replaceAll("\\s*[\\r\\n]+\\s*", "") + "\n";
-			bw.write(line);
+			bw.write(line.toLowerCase());
 		}
 		bw.close();
 	}
 	
-	public static ArrayList<String> tokenize(String line) {
-		// new IndoEuropeanTokenizerFactory instance
-		TokenizerFactory tfIndoEuro = IndoEuropeanTokenizerFactory.INSTANCE;
-		// create new object for lower case tokenizing
-		TokenizerFactory tfLowerCase = new LowerCaseTokenizerFactory(tfIndoEuro);
-		// create new object for English stop word list
-		TokenizerFactory tfEngStop = new EnglishStopTokenizerFactory(tfLowerCase);
-		TokenizerFactory tfStopFilter = new StopTokenizerFactory(tfEngStop, stopSet);
-		// do the tokenization for line based on the created tokenizers
-		Tokenization tk = new Tokenization(line, tfStopFilter);
-		String[] tokens = tk.tokens();
-		ArrayList<String> result = new ArrayList<String>();
-		for(int i = 0; i < tokens.length; i ++) {
-			result.add(tokens[i]);
+	/**
+	 * Test data clean.
+	 * @param fileName
+	 * @throws IOException
+	 */
+	public static void TestDataClean(String fileName) throws IOException {
+		StanfordLemmatizer sl = new StanfordLemmatizer();
+		File f = new File("./data/" + fileName);
+		BufferedReader br;
+		try {
+			br = new BufferedReader(new InputStreamReader(new FileInputStream(f)));
+			String line = "";
+			while((line = br.readLine()) != null) {
+				System.out.println(sl.lemmatizeString(Tokenizer.tokenizeLine(line)));
+			}
+			br.close();
+		} catch (FileNotFoundException e) {
+			e.printStackTrace();
 		}
-		return result;
+		
 	}
 	
-	public static ArrayList<String> naiveTokenize(String line) {
-		String[] tokens = line.split("[^A-Za-z0-9\']+");
-		ArrayList<String> result = new ArrayList<String>();
-		for(int i = 0; i < tokens.length; i ++) {
-			result.add(tokens[i].toLowerCase());
+	/**
+	 * Build index for generating TF-IDF weighted vector.
+	 * @param db
+	 * @throws IOException
+	 */
+	public static void BuildIndex(DB db) throws IOException {
+		Morphia morphia = new Morphia();
+		morphia.map(Review.class).map(Votes.class);
+		DBCollection reviews = db.getCollection("review");
+		DBCursor cursor = reviews.find();
+		DBObject obj = null;
+		String reviewId = "";
+		String review = "";
+		StanfordLemmatizer sl = new StanfordLemmatizer();
+		TextIndexer index = new TextIndexer("./index/testIndex");
+		while(cursor.hasNext()) {
+			obj = cursor.next();
+			reviewId = obj.get("review_id").toString();
+			review = sl.lemmatizeString(Tokenizer.tokenizeLine(obj.get("text").toString()));
+			index.addReview(reviewId, review);
 		}
-		return result;
-	}
-	
-	public static ArrayList<String> stemming(ArrayList<String> tokens) {
-		TokenizerFactory tfIndoEuro = IndoEuropeanTokenizerFactory.INSTANCE;
-		TokenizerFactory tfPorterStemmer = new PorterStemmerTokenizerFactory(tfIndoEuro);
-		ArrayList<String> result = new ArrayList<String>();
-		Tokenization tk;
-		for(String token: tokens) {
-			tk = new Tokenization(token, tfPorterStemmer);
-			result.add(tk.tokens()[0]);
-		}
-		return result;
+		index.closeIndex();
 	}
 
 	/**
@@ -110,13 +125,35 @@ public class Main {
 //			/** Create reviews text file. */
 //			ReviewText(db);
 			
-			File f = new File(absolutePath + "/data/" + "review-test.txt");
-			BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(f)));
-			String line = "";
-			while((line = br.readLine()) != null) {
-				System.out.println(stemming(naiveTokenize(line)));
-			}
-			br.close();
+//			/** Test data clean. */
+//			TestDataClean("review-100.txt");
+			
+//			/** Build idnex for generating TF-IDF weighted vector. */
+//			BuildIndex(db);
+			
+			FSDirectory dir = FSDirectory.open(new File("./index/testIndex"));
+			
+			IndexReader reader = IndexReader.open(dir);
+			System.out.println(reader.docFreq(new Term("review", "mary's")));
+			System.out.println(reader.document(2).get("review"));
+			
+			
+//			IndexSearcher searcher = new IndexSearcher(IndexReader.open(dir));
+//			Term t = new Term("review", "great");
+//			Query query = new TermQuery(t);
+//			int hitsPerPage = 2000000;
+//			TopScoreDocCollector collector = TopScoreDocCollector.create(hitsPerPage, true);
+//			searcher.search(query, collector);
+//			ScoreDoc[] hits = collector.topDocs().scoreDocs;
+//			
+//			System.out.println("Found " + hits.length + " hits.");
+//			for(int i=0;i<hits.length;++i) {
+//			    int docId = hits[i].doc;
+//			    Document d = searcher.doc(docId);
+//			    System.out.println((i + 1) + ". " + d.get("review_id") + "\t" + d.get("review"));
+//			}
+			
+			reader.close();
 			
 			
 		} catch (UnknownHostException e) {
